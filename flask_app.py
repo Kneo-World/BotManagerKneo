@@ -28,7 +28,6 @@ def db_query(sql, params=(), fetch=False, fetch_all=False):
     except Exception as e: print(f"🆘 БД Ошибка: {e}")
     return None
 
-# Инициализация
 db_query('''CREATE TABLE IF NOT EXISTS users 
     (chat_id int, user_id int, username text, name text, warns int DEFAULT 0, messages int DEFAULT 0, rep int DEFAULT 0, last_rep_time int DEFAULT 0,
     PRIMARY KEY (chat_id, user_id))''')
@@ -51,44 +50,61 @@ def parse_time(text):
     amount, unit = int(match.group(1)), match.group(2)
     return amount * (60 if unit == 'м' else 3600 if unit == 'ч' else 86400)
 
+# --- [ ПРИВЕТСТВИЯ И КНОПКИ В ЛС ] ---
+
+@bot.message_handler(commands=['start'])
+def send_start(message):
+    if message.chat.type == 'private':
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        btn_add = types.InlineKeyboardButton("➕ Добавить в чат", url=f"https://t.me/{bot.get_me().username}?startgroup=true")
+        btn_manual = types.InlineKeyboardButton("📖 Инструкция", url=MANUAL_URL)
+        markup.add(btn_add, btn_manual)
+        bot.send_message(message.chat.id, f"👋 Привет, {message.from_user.first_name}!\nЯ — Kneo. Умею мутить, банить, вести топы и репутацию. Добавь меня в чат, чтобы начать!", reply_markup=markup)
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    bot.reply_to(message, f"❓ Мануал со всеми командами тут:\n{MANUAL_URL}", disable_web_page_preview=True)
+
+@bot.message_handler(content_types=['new_chat_members'])
+def on_user_join(message):
+    for user in message.new_chat_members:
+        if user.id == bot.get_me().id:
+            bot.send_message(message.chat.id, f"🚀 Бот Kneo активирован! Мануал: {MANUAL_URL}")
+        else:
+            bot.send_message(message.chat.id, f"👋 Добро пожаловать, {user.first_name}! Ознакомься с мануалом: /help")
+
 # --- [ МОДЕРАЦИЯ ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ['мут', 'бан', 'варн', 'разбан', 'размут', 'анварн', 'кик'])
 def moder_commands(message):
     if not check_admin(message): return
-    
     text = message.text.lower()
     cmd = text.split()[0]
     target_id, target_name = None, None
 
     if message.reply_to_message:
-        target_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name
+        target_id, target_name = message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
     else:
         match = re.search(r'@(\w+)', message.text)
         if match:
             un = match.group(1).lower()
             res = db_query("SELECT user_id, name FROM users WHERE chat_id=? AND LOWER(username)=?", (message.chat.id, un), fetch=True)
             if res: target_id, target_name = res['user_id'], res['name']
-            else: return bot.reply_to(message, f"❌ Я еще не видел @{un}")
+            else: return bot.reply_to(message, "❌ Юзер не найден в базе.")
 
-    if not target_id: return bot.reply_to(message, "💬 Ответь на сообщение или тегни через @")
+    if not target_id: return bot.reply_to(message, "💬 Ответь на сообщение или тегни @username")
 
     try:
         if cmd == 'мут':
             sec = parse_time(text)
             bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time()) + sec)
             bot.reply_to(message, f"🔇 **{target_name}** в муте на {sec//60} мин.")
-
         elif cmd == 'размут':
-            bot.restrict_chat_member(message.chat.id, target_id, permissions=types.ChatPermissions(
-                can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
+            bot.restrict_chat_member(message.chat.id, target_id, permissions=types.ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
             bot.reply_to(message, f"🔊 **{target_name}** размучен!")
-
         elif cmd == 'бан':
             bot.ban_chat_member(message.chat.id, target_id)
             bot.reply_to(message, f"🔨 **{target_name}** забанен.")
-
         elif cmd == 'варн':
             db_query("UPDATE users SET warns = warns + 1 WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
             d = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, target_id), fetch=True)
@@ -96,13 +112,11 @@ def moder_commands(message):
                 bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time()) + 86400)
                 db_query("UPDATE users SET warns = 0 WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
                 bot.reply_to(message, f"⛔ **{target_name}** (3/3 варна) -> мут 24ч.")
-            else: bot.reply_to(message, f"⚠️ **{target_name}**, варн ({d['warns']}/3)")
-            
+            else: bot.reply_to(message, f"⚠️ Варн **{target_name}** ({d['warns']}/3)")
         elif cmd == 'анварн':
             db_query("UPDATE users SET warns = CASE WHEN warns > 0 THEN warns - 1 ELSE 0 END WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
             bot.reply_to(message, f"🗑 У **{target_name}** снят варн.")
-            
-    except Exception as e: bot.reply_to(message, f"❌ Ошибка прав.")
+    except Exception as e: bot.reply_to(message, "❌ Ошибка прав.")
 
 # --- [ ТОПЫ ] ---
 
@@ -125,28 +139,25 @@ def show_tops(message):
         res = db_query("SELECT name, messages FROM users WHERE chat_id=? ORDER BY messages DESC LIMIT 10", (cid,), fetch_all=True)
         title = "🏆 ОБЩИЙ ТОП"
 
-    if not res: return bot.reply_to(message, "📊 Пока пусто.")
+    if not res: return bot.reply_to(message, "📊 Пусто.")
     out = f"**{title}**\n━━━━━━━━━━━━━━\n"
     for i, r in enumerate(res, 1): out += f"{i}. {r[0]} — `{r[1]}` {unit}\n"
     bot.reply_to(message, out, parse_mode="Markdown")
 
-# --- [ РЕПУТАЦИЯ С АНТИФЛУДОМ ] ---
+# --- [ РЕПУТАЦИЯ ] ---
 
 @bot.message_handler(func=lambda m: m.reply_to_message and m.text and m.text.lower() in ['+', 'спасибо', 'сяп'])
 def plus_rep(message):
     uid, cid, now = message.from_user.id, message.chat.id, int(time.time())
     target = message.reply_to_message.from_user
     if target.id == uid or target.is_bot: return
-
     user_data = db_query("SELECT last_rep_time FROM users WHERE chat_id=? AND user_id=?", (cid, uid), fetch=True)
-    if user_data and (now - user_data['last_rep_time'] < 30):
-        return # Игнорим, если прошло меньше 30 секунд (защита от накрутки)
-
+    if user_data and (now - user_data['last_rep_time'] < 30): return
     db_query("UPDATE users SET rep = rep + 1 WHERE chat_id=? AND user_id=?", (cid, target.id))
     db_query("UPDATE users SET last_rep_time = ? WHERE chat_id=? AND user_id=?", (now, cid, uid))
     bot.reply_to(message, f"💎 Репутация **{target.first_name}** повышена!")
 
-# --- [ СТАТА И ГЛОБАЛ ] ---
+# --- [ СТАТА И ЛОГИКА ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ['профиль', 'стата'])
 def show_profile(message):

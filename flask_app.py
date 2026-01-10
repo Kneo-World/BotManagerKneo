@@ -26,82 +26,100 @@ def db_query(sql, params=(), fetch=False):
         print(f"🆘 Ошибка БД: {e}")
     return None
 
+# Таблица пользователей (добавили username для поиска)
 db_query('''CREATE TABLE IF NOT EXISTS users 
-    (chat_id int, user_id int, warns int DEFAULT 0, messages int DEFAULT 0, rep int DEFAULT 0, 
+    (chat_id int, user_id int, username text, warns int DEFAULT 0, messages int DEFAULT 0, rep int DEFAULT 0, 
     PRIMARY KEY (chat_id, user_id))''')
 
-# --- [ ПРОВЕРКА ПРАВ ] ---
+# --- [ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ] ---
 def check_admin(message):
     if message.chat.type == 'private': return True
     status = bot.get_chat_member(message.chat.id, message.from_user.id).status
     return status in ['administrator', 'creator']
 
-# --- [ КОМАНДЫ МОДЕРАЦИИ (ПОЛНЫЙ НАБОР) ] ---
+def parse_time(text):
+    match = re.search(r'(\d+)([мчд])', text.lower())
+    if not match: return 3600
+    amount, unit = int(match.group(1)), match.group(2)
+    if unit == 'м': return amount * 60
+    if unit == 'ч': return amount * 3600
+    if unit == 'д': return amount * 86400
+    return 3600
+
+def get_target_id(message):
+    """Определяет ID цели: через реплай или через @упоминание."""
+    if message.reply_to_message:
+        return message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
+    
+    # Ищем юзернейм в тексте
+    match = re.search(r'@(\w+)', message.text)
+    if match:
+        username = match.group(1).lower()
+        res = db_query("SELECT user_id, username FROM users WHERE chat_id=? AND LOWER(username)=?", (message.chat.id, username), fetch=True)
+        if res:
+            return res['user_id'], f"@{res['username']}"
+    return None, None
+
+# --- [ ГЛАВНЫЙ ОБРАБОТЧИК МОДЕРАЦИИ ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().split()[0] in ['мут', 'бан', 'кик', 'варн', 'размут', 'разбан', 'анварн'])
 def moder_commands(message):
     if not check_admin(message):
-        return bot.reply_to(message, "⚠️ **Доступ запрещен.** Команда только для админов.")
+        return bot.reply_to(message, "⚠️ Команда только для админов!")
 
-    chat_id = message.chat.id
     cmd = message.text.lower().split()[0]
-    
-    # Для команд, требующих ответ (реплай)
-    if not message.reply_to_message and cmd not in ['разбан']:
-        return bot.reply_to(message, "💬 Ответьте на сообщение пользователя этой командой!")
+    target_id, target_name = get_target_id(message)
 
-    target = message.reply_to_message.from_user if message.reply_to_message else None
-    
+    if not target_id:
+        return bot.reply_to(message, "💬 Укажите пользователя (ответ на сообщение или @упоминание).")
+
     try:
-        # --- БАН И РАЗБАН ---
         if cmd == 'бан':
-            bot.ban_chat_member(chat_id, target.id)
-            bot.reply_to(message, f"🔨 **{target.first_name}** забанен.")
-            
+            bot.ban_chat_member(message.chat.id, target_id)
+            bot.reply_to(message, f"🔨 **{target_name}** забанен!")
+
         elif cmd == 'разбан':
-            # Разбан работает либо по реплаю, либо если админ знает ID (но тут сделаем по реплаю для простоты)
-            bot.unban_chat_member(chat_id, target.id, only_if_banned=True)
-            bot.reply_to(message, f"✅ **{target.first_name}** разбанен.")
+            bot.unban_chat_member(message.chat.id, target_id, only_if_banned=True)
+            bot.reply_to(message, f"✅ **{target_name}** разбанен!")
 
-        # --- МУТ И РАЗМУТ ---
         elif cmd == 'мут':
-            bot.restrict_chat_member(chat_id, target.id, until_date=int(time.time()) + 3600)
-            bot.reply_to(message, f"🔇 **{target.first_name}** в муте на 1 час.")
-            
-        elif cmd == 'размут':
-            bot.restrict_chat_member(chat_id, target.id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
-            bot.reply_to(message, f"🔊 Мут с пользователя **{target.first_name}** снят.")
+            seconds = parse_time(message.text)
+            bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time()) + seconds)
+            bot.reply_to(message, f"🔇 **{target_name}** в муте на {seconds//60} мин.")
 
-        # --- ВАРН И АНВАРН ---
+        elif cmd == 'размут':
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
+            bot.reply_to(message, f"🔊 Мут с **{target_name}** снят.")
+
         elif cmd == 'варн':
-            db_query("INSERT OR IGNORE INTO users (chat_id, user_id) VALUES (?,?)", (chat_id, target.id))
-            db_query("UPDATE users SET warns = warns + 1 WHERE chat_id=? AND user_id=?", (chat_id, target.id))
-            data = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (chat_id, target.id), fetch=True)
-            bot.reply_to(message, f"⚠️ Варн выдан! Всего: `{data['warns']}/3`", parse_mode="Markdown")
-            
+            db_query("UPDATE users SET warns = warns + 1 WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
+            data = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, target_id), fetch=True)
+            bot.reply_to(message, f"⚠️ **{target_name}** получил варн! ({data['warns']}/3)")
+
         elif cmd == 'анварн':
-            db_query("UPDATE users SET warns = MAX(0, warns - 1) WHERE chat_id=? AND user_id=?", (chat_id, target.id))
-            data = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (chat_id, target.id), fetch=True)
-            bot.reply_to(message, f"🗑 Один варн снят. Текущий счет: `{data['warns']}/3`", parse_mode="Markdown")
+            db_query("UPDATE users SET warns = MAX(0, warns - 1) WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
+            data = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, target_id), fetch=True)
+            bot.reply_to(message, f"🗑 У **{target_name}** снят варн. Всего: {data['warns']}")
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: Убедитесь, что я админ и у меня есть права на это действие. \n`{e}`")
+        bot.reply_to(message, f"❌ Ошибка: `{e}`")
 
-# --- [ ОСТАЛЬНЫЕ ФУНКЦИИ (ПРОФИЛЬ, КНЕО) ] ---
+# --- [ ОБЩИЕ ФУНКЦИИ ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ['профиль', 'стата'])
 def profile(message):
-    uid, cid = message.from_user.id, message.chat.id
-    db_query("INSERT OR IGNORE INTO users (chat_id, user_id) VALUES (?,?)", (cid, uid))
-    res = db_query("SELECT warns, messages, rep FROM users WHERE chat_id=? AND user_id=?", (cid, uid), fetch=True)
+    res = db_query("SELECT warns, messages, rep FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, message.from_user.id), fetch=True)
     bot.reply_to(message, f"👤 **{message.from_user.first_name}**\n⭐ Репутация: `{res['rep']}`\n✉️ Сообщений: `{res['messages']}`\n⚠️ Варны: `{res['warns']}/3`", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
-def global_handler(message):
-    db_query("INSERT OR IGNORE INTO users (chat_id, user_id) VALUES (?,?)", (message.chat.id, message.from_user.id))
-    db_query("UPDATE users SET messages = messages + 1 WHERE chat_id=? AND user_id=?", (message.chat.id, message.from_user.id))
+def global_logic(message):
+    # Сохраняем/обновляем данные пользователя в БД (включая username)
+    uname = message.from_user.username if message.from_user.username else "None"
+    db_query("INSERT OR IGNORE INTO users (chat_id, user_id, username) VALUES (?,?,?)", (message.chat.id, message.from_user.id, uname))
+    db_query("UPDATE users SET messages = messages + 1, username = ? WHERE chat_id=? AND user_id=?", (uname, message.chat.id, message.from_user.id))
+    
     if message.text and message.text.lower().startswith('кнео'):
-        bot.reply_to(message, f"🔮 Ответ: {random.choice(['Да', 'Нет', 'Думаю, да', '100%', 'Нет иди нахуй', 'Я думаю тебе лутче пойти нахуй])}")
+        bot.reply_to(message, f"🔮 {random.choice(['Да', 'Нет', 'Возможно', '100%'])}")
 
 # --- [ WEBHOOK ] ---
 @app.route('/' + TOKEN, methods=['POST'])
@@ -112,4 +130,4 @@ def getMessage():
 @app.route('/')
 def setup():
     bot.set_webhook(url=f"https://{request.host}/{TOKEN}")
-    return "<h1>KNEO SYSTEM ONLINE</h1>", 200
+    return "ONLINE", 200

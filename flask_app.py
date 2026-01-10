@@ -9,6 +9,7 @@ from flask import Flask, request
 
 # --- [ КОНФИГУРАЦИЯ ] ---
 TOKEN = '8202182875:AAEecFwxWQFBjny1-5VrGa9jDKsJaYOKxnA'
+ADMIN_ID = 8364667153  # Твой ID теперь здесь
 DB_PATH = 'kneo_base.db'
 MANUAL_URL = 'https://kneo-world.github.io/MANYAL-BOT-MANAGER/'
 
@@ -28,12 +29,16 @@ def db_query(sql, params=(), fetch=False, fetch_all=False):
     except Exception as e: print(f"🆘 БД Ошибка: {e}")
     return None
 
+# Таблицы
 db_query('''CREATE TABLE IF NOT EXISTS users 
     (chat_id int, user_id int, username text, name text, warns int DEFAULT 0, messages int DEFAULT 0, rep int DEFAULT 0, last_rep_time int DEFAULT 0,
     PRIMARY KEY (chat_id, user_id))''')
 
 db_query('''CREATE TABLE IF NOT EXISTS messages_log 
     (chat_id int, user_id int, timestamp int)''')
+
+db_query('''CREATE TABLE IF NOT EXISTS chats_info 
+    (chat_id int PRIMARY KEY, title text, member_count int)''')
 
 # --- [ УТИЛИТЫ ] ---
 
@@ -50,7 +55,22 @@ def parse_time(text):
     amount, unit = int(match.group(1)), match.group(2)
     return amount * (60 if unit == 'м' else 3600 if unit == 'ч' else 86400)
 
-# --- [ ПРИВЕТСТВИЯ И КНОПКИ В ЛС ] ---
+# --- [ АДМИН-КОМАНДА: СПИСОК ЧАТОВ ] ---
+
+@bot.message_handler(commands=['chats'])
+def list_chats(message):
+    # Только для тебя и только в ЛС
+    if message.from_user.id == ADMIN_ID and message.chat.type == 'private':
+        res = db_query("SELECT title, chat_id, member_count FROM chats_info", fetch_all=True)
+        if not res:
+            return bot.send_message(message.chat.id, "📭 Список чатов пуст.")
+
+        text = "📂 **Список всех чатов Kneo:**\n━━━━━━━━━━━━━━\n"
+        for i, row in enumerate(res, 1):
+            text += f"{i}. **{row['title']}**\n   ID: `{row['chat_id']}`\n   Юзеров: {row['member_count']}\n\n"
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+# --- [ ПРИВЕТСТВИЯ И СТАРТ ] ---
 
 @bot.message_handler(commands=['start'])
 def send_start(message):
@@ -59,19 +79,23 @@ def send_start(message):
         btn_add = types.InlineKeyboardButton("➕ Добавить в чат", url=f"https://t.me/{bot.get_me().username}?startgroup=true")
         btn_manual = types.InlineKeyboardButton("📖 Инструкция", url=MANUAL_URL)
         markup.add(btn_add, btn_manual)
-        bot.send_message(message.chat.id, f"👋 Привет, {message.from_user.first_name}!\nЯ — Kneo. Умею мутить, банить, вести топы и репутацию. Добавь меня в чат, чтобы начать!", reply_markup=markup)
+        bot.send_message(message.chat.id, f"👋 Привет, {message.from_user.first_name}!\nЯ — Kneo. Помогу с управлением чатом и статистикой.", reply_markup=markup)
 
 @bot.message_handler(commands=['help'])
 def send_help(message):
-    bot.reply_to(message, f"❓ Мануал со всеми командами тут:\n{MANUAL_URL}", disable_web_page_preview=True)
+    bot.reply_to(message, f"❓ Мануал со всеми командами:\n{MANUAL_URL}", disable_web_page_preview=True)
 
 @bot.message_handler(content_types=['new_chat_members'])
 def on_user_join(message):
+    # Сохраняем инфо о чате при входе бота
+    db_query("INSERT OR REPLACE INTO chats_info (chat_id, title, member_count) VALUES (?,?,?)", 
+             (message.chat.id, message.chat.title, bot.get_chat_member_count(message.chat.id)))
+    
     for user in message.new_chat_members:
         if user.id == bot.get_me().id:
-            bot.send_message(message.chat.id, f"🚀 Бот Kneo активирован! Мануал: {MANUAL_URL}")
+            bot.send_message(message.chat.id, f"🚀 Kneo запущен! Ссылка на мануал: {MANUAL_URL}")
         else:
-            bot.send_message(message.chat.id, f"👋 Добро пожаловать, {user.first_name}! Ознакомься с мануалом: /help")
+            bot.send_message(message.chat.id, f"👋 Привет, {user.first_name}! Ознакомься с правилами и мануалом: /help")
 
 # --- [ МОДЕРАЦИЯ ] ---
 
@@ -101,7 +125,7 @@ def moder_commands(message):
             bot.reply_to(message, f"🔇 **{target_name}** в муте на {sec//60} мин.")
         elif cmd == 'размут':
             bot.restrict_chat_member(message.chat.id, target_id, permissions=types.ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
-            bot.reply_to(message, f"🔊 **{target_name}** размучен!")
+            bot.reply_to(message, f"🔊 **{target_name}** снова может писать!")
         elif cmd == 'бан':
             bot.ban_chat_member(message.chat.id, target_id)
             bot.reply_to(message, f"🔨 **{target_name}** забанен.")
@@ -116,9 +140,9 @@ def moder_commands(message):
         elif cmd == 'анварн':
             db_query("UPDATE users SET warns = CASE WHEN warns > 0 THEN warns - 1 ELSE 0 END WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
             bot.reply_to(message, f"🗑 У **{target_name}** снят варн.")
-    except Exception as e: bot.reply_to(message, "❌ Ошибка прав.")
+    except Exception as e: bot.reply_to(message, "❌ Ошибка прав бота.")
 
-# --- [ ТОПЫ ] ---
+# --- [ ТОПЫ И СТАТИСТИКА ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ['топ', 'денотоп', 'неделотоп', 'месятоп', 'репотоп'])
 def show_tops(message):
@@ -139,14 +163,14 @@ def show_tops(message):
         res = db_query("SELECT name, messages FROM users WHERE chat_id=? ORDER BY messages DESC LIMIT 10", (cid,), fetch_all=True)
         title = "🏆 ОБЩИЙ ТОП"
 
-    if not res: return bot.reply_to(message, "📊 Пусто.")
+    if not res: return bot.reply_to(message, "📊 Статистика пуста.")
     out = f"**{title}**\n━━━━━━━━━━━━━━\n"
     for i, r in enumerate(res, 1): out += f"{i}. {r[0]} — `{r[1]}` {unit}\n"
     bot.reply_to(message, out, parse_mode="Markdown")
 
 # --- [ РЕПУТАЦИЯ ] ---
 
-@bot.message_handler(func=lambda m: m.reply_to_message and m.text and m.text.lower() in ['+', 'спасибо', 'сяп'])
+@bot.message_handler(func=lambda m: m.reply_to_message and m.text and m.text.lower() in ['+', 'спасибо', 'сяп', 'благодарю'])
 def plus_rep(message):
     uid, cid, now = message.from_user.id, message.chat.id, int(time.time())
     target = message.reply_to_message.from_user
@@ -157,7 +181,7 @@ def plus_rep(message):
     db_query("UPDATE users SET last_rep_time = ? WHERE chat_id=? AND user_id=?", (now, cid, uid))
     bot.reply_to(message, f"💎 Репутация **{target.first_name}** повышена!")
 
-# --- [ СТАТА И ЛОГИКА ] ---
+# --- [ ГЛОБАЛЬНАЯ ЛОГИКА ] ---
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower() in ['профиль', 'стата'])
 def show_profile(message):
@@ -169,9 +193,15 @@ def global_handler(message):
     if message.chat.type == 'private': return
     un, nm = (message.from_user.username or "none").lower(), message.from_user.first_name
     uid, cid = message.from_user.id, message.chat.id
+    
+    # Регулярно обновляем инфо о чате (название, кол-во участников)
+    db_query("INSERT OR REPLACE INTO chats_info (chat_id, title, member_count) VALUES (?,?,?)", 
+             (cid, message.chat.title, bot.get_chat_member_count(cid)))
+    
     db_query("INSERT OR IGNORE INTO users (chat_id, user_id, username, name) VALUES (?,?,?,?)", (cid, uid, un, nm))
     db_query("UPDATE users SET messages = messages + 1, username = ?, name = ? WHERE chat_id=? AND user_id=?", (un, nm, cid, uid))
     db_query("INSERT INTO messages_log (chat_id, user_id, timestamp) VALUES (?,?,?)", (cid, uid, int(time.time())))
+    
     if message.text and message.text.lower().startswith('кнео'):
         bot.reply_to(message, f"🔮 {random.choice(['Да', 'Нет', '100%'])}")
 

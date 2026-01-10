@@ -49,13 +49,9 @@ def parse_time(text):
     return 3600
 
 def get_target_id(message):
-    """Определяет ID цели: через реплай или через @упоминание."""
-    # 1. Если есть реплай
     if message.reply_to_message:
         return message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
     
-    # 2. Если есть упоминание через @
-    # Ищем в тексте сообщения или в entities (метаданных телеграма)
     target_username = None
     if message.entities:
         for entity in message.entities:
@@ -64,18 +60,16 @@ def get_target_id(message):
                 break
     
     if not target_username:
-        # Поиск через регулярку, если entities не сработали
         match = re.search(r'@(\w+)', message.text)
         if match:
             target_username = match.group(1).lower()
 
     if target_username:
-        # Ищем ID в нашей базе по юзернейму
         res = db_query("SELECT user_id FROM users WHERE chat_id=? AND LOWER(username)=?", (message.chat.id, target_username), fetch=True)
         if res:
             return res['user_id'], f"@{target_username}"
         else:
-            bot.reply_to(message, f"❌ Я еще не знаю пользователя @{target_username}. Он должен написать хоть одно сообщение!")
+            bot.reply_to(message, f"❌ Я еще не знаю пользователя @{target_username}. Пусть он что-то напишет.")
     
     return None, None
 
@@ -90,10 +84,10 @@ def moder_commands(message):
     target_id, target_name = get_target_id(message)
 
     if not target_id:
-        return # Если не нашли цель, просто выходим (текст ошибки уже выдан в get_target_id)
+        return
 
     try:
-        # Проверка: не пытаемся ли мы наказать админа
+        # Проверка: не админ ли цель?
         target_status = bot.get_chat_member(message.chat.id, target_id).status
         if target_status in ['administrator', 'creator'] and cmd not in ['разбан', 'размут', 'анварн']:
             return bot.reply_to(message, "❌ Нельзя наказывать администраторов!")
@@ -103,9 +97,8 @@ def moder_commands(message):
             bot.reply_to(message, f"🔨 **{target_name}** забанен!")
 
         elif cmd == 'разбан':
-            # Снимаем бан (разрешаем вход)
             bot.unban_chat_member(message.chat.id, target_id, only_if_banned=True)
-            bot.reply_to(message, f"✅ **{target_name}** разбанен! Теперь он может войти.")
+            bot.reply_to(message, f"✅ **{target_name}** разбанен!")
 
         elif cmd == 'мут':
             seconds = parse_time(message.text)
@@ -113,15 +106,26 @@ def moder_commands(message):
             bot.reply_to(message, f"🔇 **{target_name}** в муте на {seconds//60} мин.")
 
         elif cmd == 'размут':
-            bot.restrict_chat_member(message.chat.id, target_id, 
-                can_send_messages=True, can_send_media_messages=True, 
-                can_send_other_messages=True, can_add_web_page_previews=True)
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
             bot.reply_to(message, f"🔊 Мут с **{target_name}** снят.")
 
         elif cmd == 'варн':
+            # Добавляем варн в базу
+            db_query("INSERT OR IGNORE INTO users (chat_id, user_id) VALUES (?,?)", (message.chat.id, target_id))
             db_query("UPDATE users SET warns = warns + 1 WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
+            
+            # Проверяем текущее кол-во
             data = db_query("SELECT warns FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, target_id), fetch=True)
-            bot.reply_to(message, f"⚠️ **{target_name}** получил варн! ({data['warns']}/3)")
+            current_warns = data['warns']
+            
+            if current_warns >= 3:
+                # АВТО-МУТ НА 24 ЧАСА (86400 секунд)
+                bot.restrict_chat_member(message.chat.id, target_id, until_date=int(time.time()) + 86400)
+                # ОБНУЛЯЕМ ВАРНЫ
+                db_query("UPDATE users SET warns = 0 WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
+                bot.reply_to(message, f"⛔ **{target_name}** набрал 3/3 варна и получает мут на 24 часа! Варны обнулены.")
+            else:
+                bot.reply_to(message, f"⚠️ **{target_name}** получил варн! ({current_warns}/3)")
 
         elif cmd == 'анварн':
             db_query("UPDATE users SET warns = MAX(0, warns - 1) WHERE chat_id=? AND user_id=?", (message.chat.id, target_id))
@@ -129,24 +133,25 @@ def moder_commands(message):
             bot.reply_to(message, f"🗑 У **{target_name}** снят варн. Всего: {data['warns']}")
 
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка выполнения: `{e}`")
+        bot.reply_to(message, f"❌ Ошибка: `{e}`")
 
 # --- [ ОБЩАЯ ЛОГИКА ] ---
 
+@bot.message_handler(func=lambda m: m.text and m.text.lower() in ['профиль', 'стата'])
+def profile(message):
+    res = db_query("SELECT warns, messages, rep FROM users WHERE chat_id=? AND user_id=?", (message.chat.id, message.from_user.id), fetch=True)
+    if not res:
+        return bot.reply_to(message, "❌ Сначала напиши что-нибудь!")
+    bot.reply_to(message, f"👤 **{message.from_user.first_name}**\n⭐ Репутация: `{res['rep']}`\n✉️ Сообщений: `{res['messages']}`\n⚠️ Варны: `{res['warns']}/3`", parse_mode="Markdown")
+
 @bot.message_handler(func=lambda m: True)
 def global_logic(message):
-    # СОХРАНЕНИЕ ЮЗЕРНЕЙМА (Важно для поиска)
     current_username = message.from_user.username.lower() if message.from_user.username else None
-    
-    db_query("INSERT OR IGNORE INTO users (chat_id, user_id, username) VALUES (?,?,?)", 
-             (message.chat.id, message.from_user.id, current_username))
-    
-    # Обновляем юзернейм при каждом сообщении (если человек его сменил)
-    db_query("UPDATE users SET messages = messages + 1, username = ? WHERE chat_id=? AND user_id=?", 
-             (current_username, message.chat.id, message.from_user.id))
+    db_query("INSERT OR IGNORE INTO users (chat_id, user_id, username) VALUES (?,?,?)", (message.chat.id, message.from_user.id, current_username))
+    db_query("UPDATE users SET messages = messages + 1, username = ? WHERE chat_id=? AND user_id=?", (current_username, message.chat.id, message.from_user.id))
     
     if message.text and message.text.lower().startswith('кнео'):
-        bot.reply_to(message, f"🔮 {random.choice(['Да', 'Нет', '100%', 'Нет иди нахуй', 'Я думаю лутче тебе пойти нахуй')}")
+        bot.reply_to(message, f"🔮 {random.choice(['Да', 'Нет', '100%', 'Нет иди на хуй', 'Я думаю тебе лутче пойти на хуй'])}")
 
 # --- [ WEBHOOK ] ---
 @app.route('/' + TOKEN, methods=['POST'])

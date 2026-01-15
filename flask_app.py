@@ -8,8 +8,8 @@ from telebot import types
 from flask import Flask, request
 
 # --- [ КОНФИГУРАЦИЯ ] ---
-TOKEN = '8202182875:AAEecFwxWQFBjny1-5VrGa9jDKsJaYOKxnA'
-ADMIN_ID = 8364667153 
+TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = 8364667153
 DB_PATH = 'kneo_base.db'
 MANUAL_URL = 'https://kneo-world.github.io/MANYAL-BOT-MANAGER/'
 

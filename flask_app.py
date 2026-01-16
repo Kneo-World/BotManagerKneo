@@ -42,7 +42,7 @@ STRINGS = {
         'empty_top': "📊 В этом чате пока нет данных для топа.",
         'profile': "👤 **Профиль: {}**\n━━━━━━━━━━━━━━\n⭐ Репутация: `{}`\n✉️ Сообщений: `{}`\n⚠️ Варны: `{}/3`",
         'activated': "🚀 Kneo успешно запущен! Ознакомьтесь с управлением: {}",
-        'kneo_ans': ['Да', 'Нет', 'Весьма вероятно', '100%', 'Не думаю', 'Спроси позже']
+        'kneo_ans': ["Да", "Нет", "Весьма вероятно", "100%", "Не думаю", "Спроси позже"]
     },
     'en': {
         'start': "👋 Hello, {}! I'm **Kneo**. I'll help you keep your chat organized.",
@@ -67,7 +67,7 @@ STRINGS = {
         'empty_top': "📊 No data for the leaderboard yet.",
         'profile': "👤 **Profile: {}**\n━━━━━━━━━━━━━━\n⭐ Rep: `{}`\n✉️ Messages: `{}`\n⚠️ Warns: `{}/3`",
         'activated': "🚀 Kneo activated! Check bot commands here: {}",
-        'kneo_ans': ['Yes', 'No', 'Most likely', '100%', 'I don't think so', 'Ask later']
+        'kneo_ans': ["Yes", "No", "Most likely", "100%", "I don't think so", "Ask later"]
     }
 }
 
